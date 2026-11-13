@@ -229,6 +229,67 @@ static void VerifyPushDropSized40(benchmark::Bench& bench) { VerifyPushDropSized
 static void VerifyPushDropSized56(benchmark::Bench& bench) { VerifyPushDropSized<56>(bench); }
 static void VerifyPushDropSized520(benchmark::Bench& bench) { VerifyPushDropSized<520>(bench); }
 
+template <bool nonzero_first>
+static void VerifyIfDupVerify(benchmark::Bench& bench)
+{
+    std::vector<ScriptStackElem> stack;
+    std::vector<unsigned char> value(MAX_SCRIPT_ELEMENT_SIZE, 0);
+    if (nonzero_first) value[0] = 1;
+    else value.back() = 1;
+
+    CScript script;
+    script << value;
+    for (int i = 0; i < 180'000; ++i) {
+        script << OP_IFDUP << OP_VERIFY;
+    }
+
+    bench.unit("script")
+        .setup([&] { stack.clear(); })
+        .run([&] {
+            ScriptError error;
+            const bool ret{EvalScript(stack, script, /*flags=*/0, BaseSignatureChecker(), SigVersion::TAPSCRIPT, nullptr, &error)};
+            assert(ret && error == SCRIPT_ERR_OK);
+            assert(stack.size() == 1 && stack.back()->size() == MAX_SCRIPT_ELEMENT_SIZE);
+        });
+}
+
+static void VerifyIfDupVerifyFirst(benchmark::Bench& bench) { VerifyIfDupVerify</*nonzero_first=*/true>(bench); }
+static void VerifyIfDupVerifyLast(benchmark::Bench& bench) { VerifyIfDupVerify</*nonzero_first=*/false>(bench); }
+
+// Repeated hashing of one shared element: 3 hashes per 7-byte round.
+template <size_t elem_size, opcodetype hashop, size_t script_budget = MAX_SCRIPT_SIZE>
+static void VerifyDup3HashDrop(benchmark::Bench& bench)
+{
+    if constexpr (elem_size > MAX_SCRIPT_ELEMENT_SIZE) {
+        bench.unit("script").run([] {});
+        return;
+    }
+    std::vector<ScriptStackElem> stack;
+    CScript script;
+    script << std::vector<unsigned char>(elem_size, /*c=*/0xab);
+    script << OP_DUP << OP_DUP;
+    const size_t rounds{(script_budget - script.size()) / 7};
+    for (size_t i = 0; i < rounds; ++i) {
+        script << OP_3DUP << hashop << OP_DROP << hashop << OP_DROP << hashop << OP_DROP;
+    }
+    assert(script.size() <= script_budget);
+    bench.unit("script")
+        .setup([&] { stack.clear(); })
+        .run([&] {
+            ScriptError error;
+            const bool ret{EvalScript(stack, script, /*flags=*/0, BaseSignatureChecker(), SigVersion::TAPSCRIPT, nullptr, &error)};
+            assert(ret && error == SCRIPT_ERR_OK);
+        });
+}
+
+static void VerifyDup3HashDrop_RMD160_520(benchmark::Bench& bench) { VerifyDup3HashDrop<520, OP_RIPEMD160>(bench); }
+static void VerifyDup3HashDrop_RMD160_6000(benchmark::Bench& bench) { VerifyDup3HashDrop<6000, OP_RIPEMD160>(bench); }
+// TODO: benchmark sha256
+
+// Same loop at 360'000 script bytes (~366k WU).
+static void VerifyDup3HashDropFull_RMD160_520(benchmark::Bench& bench) { VerifyDup3HashDrop<520, OP_RIPEMD160, 360'000>(bench); }
+static void VerifyDup3HashDropFull_RMD160_6000(benchmark::Bench& bench) { VerifyDup3HashDrop<6000, OP_RIPEMD160, 360'000>(bench); }
+
 BENCHMARK(VerifyScriptP2WPKH);
 BENCHMARK(VerifyScriptP2SH_P2WPKH);
 BENCHMARK(VerifyScriptP2TR_KeyPath);
@@ -241,3 +302,9 @@ BENCHMARK(VerifyPushDropSized24);
 BENCHMARK(VerifyPushDropSized40);
 BENCHMARK(VerifyPushDropSized56);
 BENCHMARK(VerifyPushDropSized520);
+BENCHMARK(VerifyIfDupVerifyFirst);
+BENCHMARK(VerifyIfDupVerifyLast);
+BENCHMARK(VerifyDup3HashDrop_RMD160_520);
+BENCHMARK(VerifyDup3HashDrop_RMD160_6000);
+BENCHMARK(VerifyDup3HashDropFull_RMD160_520);
+BENCHMARK(VerifyDup3HashDropFull_RMD160_6000);
