@@ -22,6 +22,7 @@
 #include <cstring>
 #include <limits>
 #include <stdexcept>
+#include <unordered_map>
 
 typedef std::vector<unsigned char> valtype;
 
@@ -56,6 +57,17 @@ bool CastToBool(const valtype& vch)
         }
     }
     return false;
+}
+
+static bool CastToBoolCached(std::unordered_map<const valtype*, std::pair<ScriptStackElem, bool>>& cache, const ScriptStackElem& elem)
+{
+    if (elem->size() < 128) return CastToBool(*elem);
+    const valtype* key = elem.get();
+    auto it = cache.find(key);
+    if (it != cache.end()) return it->second.second;
+    bool result = CastToBool(*elem);
+    cache.emplace(key, std::make_pair(elem, result));
+    return result;
 }
 
 ScriptStackElem MakeStackElem(std::vector<unsigned char>&& v) { return std::make_shared<const valtype>(std::move(v)); }
@@ -442,6 +454,7 @@ bool EvalScript(std::vector<ScriptStackElem>& stack, const CScript& script, scri
     valtype vchPushValue;
     ConditionStack vfExec;
     std::vector<ScriptStackElem> altstack;
+    std::unordered_map<const valtype*, std::pair<ScriptStackElem, bool>> bool_cache;
     set_error(serror, SCRIPT_ERR_UNKNOWN_ERROR);
     if ((sigversion == SigVersion::BASE || sigversion == SigVersion::WITNESS_V0) && script.size() > MAX_SCRIPT_SIZE) {
         return set_error(serror, SCRIPT_ERR_SCRIPT_SIZE);
@@ -674,7 +687,7 @@ bool EvalScript(std::vector<ScriptStackElem>& stack, const CScript& script, scri
                     // (false -- false) and return
                     if (stack.size() < 1)
                         return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
-                    bool fValue = CastToBool(stacktop(-1));
+                    bool fValue = CastToBoolCached(bool_cache, stackelem(-1));
                     if (fValue)
                         popstack(stack);
                     else
@@ -787,7 +800,7 @@ bool EvalScript(std::vector<ScriptStackElem>& stack, const CScript& script, scri
                     if (stack.size() < 1)
                         return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
                     ScriptStackElem elem = stackelem(-1);
-                    if (CastToBool(*elem))
+                    if (CastToBoolCached(bool_cache, elem))
                         stack.push_back(elem);
                 }
                 break;
